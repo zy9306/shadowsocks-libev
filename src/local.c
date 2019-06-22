@@ -79,10 +79,6 @@
 #define EWOULDBLOCK EAGAIN
 #endif
 
-#ifndef BUF_SIZE
-#define BUF_SIZE 2048
-#endif
-
 int verbose    = 0;
 int reuse_port = 0;
 
@@ -302,7 +298,7 @@ server_handshake_reply(EV_P_ ev_io *w, int udp_assc, struct socks5_response *res
 
     buffer_t resp_to_send;
     buffer_t *resp_buf = &resp_to_send;
-    balloc(resp_buf, BUF_SIZE);
+    balloc(resp_buf, SOCKET_BUF_SIZE);
 
     memcpy(resp_buf->data, response, sizeof(struct socks5_response));
     memcpy(resp_buf->data + sizeof(struct socks5_response),
@@ -357,7 +353,7 @@ server_handshake(EV_P_ ev_io *w, buffer_t *buf)
         }
         return server_handshake_reply(EV_A_ w, 1, &response);
     } else if (request->cmd != SOCKS5_CMD_CONNECT) {
-        LOGE("unsupported cmd: %d", request->cmd);
+        LOGE("unsupported command: %d", request->cmd);
         response.rep = SOCKS5_REP_CMD_NOT_SUPPORTED;
         char *send_buf = (char *)&response;
         send(server->fd, send_buf, 4, 0);
@@ -450,7 +446,7 @@ server_handshake(EV_P_ ev_io *w, buffer_t *buf)
         else if (dst_port == tls_protocol->default_port)
             hostname_len = tls_protocol->parse_packet(buf->data + 3 + abuf->len,
                                              buf->len - 3 - abuf->len, &hostname);
-        if (hostname_len == -1 && buf->len < BUF_SIZE && server->stage != STAGE_SNI) {
+        if (hostname_len == -1 && buf->len < SOCKET_BUF_SIZE && server->stage != STAGE_SNI) {
             if (server_handshake_reply(EV_A_ w, 0, &response) < 0)
                 return -1;
             server->stage = STAGE_SNI;
@@ -602,7 +598,7 @@ not_bypass:
     }
 
     if (!remote->direct) {
-        int err = crypto->encrypt(abuf, server->e_ctx, BUF_SIZE);
+        int err = crypto->encrypt(abuf, server->e_ctx, SOCKET_BUF_SIZE);
         if (err) {
             LOGE("invalid password or cipher");
             close_and_free_remote(EV_A_ remote);
@@ -646,7 +642,7 @@ server_stream(EV_P_ ev_io *w, buffer_t *buf)
 #ifdef __ANDROID__
         tx += remote->buf->len;
 #endif
-        int err = crypto->encrypt(remote->buf, server->e_ctx, BUF_SIZE);
+        int err = crypto->encrypt(remote->buf, server->e_ctx, SOCKET_BUF_SIZE);
 
         if (err) {
             LOGE("invalid password or cipher");
@@ -656,7 +652,7 @@ server_stream(EV_P_ ev_io *w, buffer_t *buf)
         }
 
         if (server->abuf) {
-            bprepend(remote->buf, server->abuf, BUF_SIZE);
+            bprepend(remote->buf, server->abuf, SOCKET_BUF_SIZE);
             bfree(server->abuf);
             ss_free(server->abuf);
             server->abuf = NULL;
@@ -849,7 +845,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     }
 
     if (revents != EV_TIMER) {
-        r = recv(server->fd, buf->data + buf->len, BUF_SIZE - buf->len, 0);
+        r = recv(server->fd, buf->data + buf->len, SOCKET_BUF_SIZE - buf->len, 0);
 
         if (r == 0) {
             // connection closed
@@ -880,6 +876,13 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             // all processed
             return;
         } else if (server->stage == STAGE_INIT) {
+            if(verbose) {
+                struct sockaddr_in peer_addr;
+                socklen_t peer_addr_len = sizeof peer_addr;
+                if(getpeername(server->fd, (struct sockaddr *)&peer_addr, &peer_addr_len) == 0) {
+                    LOGI("connection from %s:%hu", inet_ntoa(peer_addr.sin_addr), ntohs(peer_addr.sin_port));
+                }
+            }
             if (buf->len < 1)
                 return;
             if (buf->data[0] != SVERSION) {
@@ -1006,7 +1009,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     remote_t *remote              = remote_recv_ctx->remote;
     server_t *server              = remote->server;
 
-    ssize_t r = recv(remote->fd, server->buf->data, BUF_SIZE, 0);
+    ssize_t r = recv(remote->fd, server->buf->data, SOCKET_BUF_SIZE, 0);
 
     if (r == 0) {
         // connection closed
@@ -1033,7 +1036,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         rx += server->buf->len;
         stat_update_cb();
 #endif
-        int err = crypto->decrypt(server->buf, server->d_ctx, BUF_SIZE);
+        int err = crypto->decrypt(server->buf, server->d_ctx, SOCKET_BUF_SIZE);
         if (err == CRYPTO_ERROR) {
             LOGE("invalid password or cipher");
             close_and_free_remote(EV_A_ remote);
@@ -1179,7 +1182,7 @@ new_remote(int fd, int timeout)
     remote->buf      = ss_malloc(sizeof(buffer_t));
     remote->recv_ctx = ss_malloc(sizeof(remote_ctx_t));
     remote->send_ctx = ss_malloc(sizeof(remote_ctx_t));
-    balloc(remote->buf, BUF_SIZE);
+    balloc(remote->buf, SOCKET_BUF_SIZE);
     memset(remote->recv_ctx, 0, sizeof(remote_ctx_t));
     memset(remote->send_ctx, 0, sizeof(remote_ctx_t));
     remote->recv_ctx->connected = 0;
@@ -1235,8 +1238,8 @@ new_server(int fd)
     server->send_ctx = ss_malloc(sizeof(server_ctx_t));
     server->buf      = ss_malloc(sizeof(buffer_t));
     server->abuf     = ss_malloc(sizeof(buffer_t));
-    balloc(server->buf, BUF_SIZE);
-    balloc(server->abuf, BUF_SIZE);
+    balloc(server->buf, SOCKET_BUF_SIZE);
+    balloc(server->abuf, SOCKET_BUF_SIZE);
     memset(server->recv_ctx, 0, sizeof(server_ctx_t));
     memset(server->send_ctx, 0, sizeof(server_ctx_t));
     server->stage               = STAGE_INIT;
@@ -1362,6 +1365,11 @@ create_remote(listen_ctx_t *listener,
     remote->addr_len = get_sockaddr_len(remote_addr);
     memcpy(&(remote->addr), remote_addr, remote->addr_len);
     remote->direct = direct;
+
+    if(verbose) {
+        struct sockaddr_in *sockaddr = (struct sockaddr_in *)&remote->addr;
+        LOGI("remote: %s:%hu", inet_ntoa(sockaddr->sin_addr), ntohs(sockaddr->sin_port));
+    }
 
     return remote;
 }
@@ -1689,12 +1697,22 @@ main(int argc, char **argv)
         }
     }
 
-    if (remote_num == 0 || remote_port == NULL ||
+    if(remote_num == 0) {
+        fprintf(stderr, "remote_num is 0\n");
+        exit(EXIT_FAILURE);
+    }
+    if(!remote_port) {
+        fprintf(stderr, "remote_port is NULL\n");
+        exit(EXIT_FAILURE);
+    }
 #ifndef HAVE_LAUNCHD
-        local_port == NULL ||
+    if(!local_port) {
+        fprintf(stderr, "local_port is NULL\n");
+        exit(EXIT_FAILURE);
+    }
 #endif
-        (password == NULL && key == NULL)) {
-        usage();
+    if(!password && !key) {
+        fprintf(stderr, "both password and key are NULL\n");
         exit(EXIT_FAILURE);
     }
 

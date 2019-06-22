@@ -673,7 +673,7 @@ manager_recv_cb(EV_P_ ev_io *w, int revents)
         }
 
         size_t pos = strlen(buf);
-        strcpy(buf + pos - 1, "\n]"); // Remove trailing ","
+        strcpy(buf + max(pos - 1, 1), "\n]"); // Remove trailing ","
         pos = strlen(buf);
         if (sendto(manager->fd, buf, pos, 0, (struct sockaddr *)&claddr, len)
             != pos) {
@@ -705,10 +705,15 @@ manager_recv_cb(EV_P_ ev_io *w, int revents)
 
         if (parse_traffic(buf, r, port, &traffic) == -1) {
             LOGE("invalid command: %s:%s", buf, get_data(buf, r));
-            return;
+	    goto ERROR_MSG;
         }
 
         update_stat(port, traffic);
+
+	char msg[3] = "ok";
+        if (sendto(manager->fd, msg, 2, 0, (struct sockaddr *)&claddr, len) != 2) {
+            ERROR("stat_sendto");
+        }
     } else if (strcmp(action, "ping") == 0) {
         struct cork_hash_table_entry *entry;
         struct cork_hash_table_iterator server_iter;
